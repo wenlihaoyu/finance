@@ -1,0 +1,159 @@
+---
+title: "金融数据探索性分析"
+author: "lywen"
+date: "2015年4月11日"
+output: html_document
+---
+## library packages
+```{r}
+library(xts)
+library(zoo)
+library(quantmod)
+library(plyr)
+```
+
+## 从csv文件中读取股票数据
+
+```{r}
+data=read.csv("~/desktop/finance-project/app/stock_day.csv",header=T)
+## 转化日期
+data$date=as.Date(data$date)
+##获取数据集中股票代码
+symbol=unique(data$symbol)
+```
+##  计算股票的日均收益率,收盘价—开盘价
+```{r}
+data$daily=(data$close-data$open)/data$open*100
+```
+## 数据清洗
+```{r delete the wrong data}
+## 剔除没有交易量的数据，及中国的节假日数据
+label=which(data$volume==0)
+new.data=data[-label,]
+##剔除错误数据：涨幅限制，上一个交易日的收盘价×（1±10%）
+new.data=new.data[new.data$daily<50 & new.data$daily> -50,]
+```
+
+
+
+## 对无交易数据的天进行处理
+```{r}
+Fill<-function(data){
+  date=seq(min(data$date),max(data$date),length=max(data$date)-min(data$date))
+  date=data.frame(date=as.character(date))
+  data$date=as.character(data$date)
+  clean.data=join(date,data,by='date',type='left')
+  clean.data$date=as.Date(clean.data$date)
+  clean.data=clean.data[order(clean.data$date),]
+  ##对无数据的天按上一交易日的收盘价进行填充，交易量为0，收益率  ##为0，进行填充
+  for(i in 2:nrow(clean.data)){
+    if(sum(is.na(clean.data[i,-1]))==ncol(clean.data)-1){
+        clean.data[i,'open']=clean.data[i-1,'close']
+        clean.data[i,'high']=clean.data[i-1,'close']
+        clean.data[i,'low']=clean.data[i-1,'close']
+        clean.data[i,'close']=clean.data[i-1,'close']
+        clean.data[i,'volume']=0
+        clean.data[i,'adj_close']=clean.data[i-1,'close']
+        clean.data[i,'symbol']=clean.data[i-1,'symbol']
+        clean.data[i,'daily']=0
+        }
+  }
+  return(clean.data)
+}
+```
+## 计算每只股票的平均收益率及标准差
+```{r }
+da=aggregate(daily~symbol,data=new.data,function(data){c(mean=mean(data),sd=sd(data))})
+da
+```
+
+## 探索股票收益率的分布
+```{r,warning=FALSE}
+samples<-function(data,b,k){
+
+print(ks.test(data$daily,"pnorm",mean(data$daily),sd(data$daily)))
+plot(density(data$daily),main="rate%",xlab="rate",col='blue')
+lines(density(rnorm(100000,mean(data$daily),sd(data$daily))),col="red")
+lines(sort(data$daily),Laplace(sort(data$daily),b),type='l',col="green")
+lines(x=sort(data$daily),y=cauchy(sort(data$daily)),type='l',col="yellow")
+with(data[data$daily>0,],lines(x=sort(daily),y=zeta(sort(daily),k=k,min(daily)),type='l',col="black"))
+with(data[data$daily<0,],lines(x=sort(daily),y=-zeta(sort(-daily),k=k,min(-daily)),type='l',col="black"))
+legend("topright",cex=0.4,pt.cex=0.8,legend=c("real","norm","Laplace","cauchy","Zeta","Zeta"),lwd=3,col=c("blue","red","green","yellow","black","black"))
+
+}
+
+##检验收益率是否服从正态分布
+##非对称的Laplace分布
+##http://wenku.baidu.com/link?url=_4EQsT3oFhsBD8qGSpZgrt1I_U7hzD##m4Na5Mb78HnQKtNls6TOKcn-LpIHk5ptPwonSNSrnBc6XrvIkJYUJslIoqfLaU## iIojwz7aqtQAe7e
+ Laplace<-function(data,b){
+   1/2/b*exp(-abs(data-mean(data))/b)
+ }
+##广义帕累托分布
+##帕累托分布
+zeta<-function(x,k,xmin){
+  k*xmin^k/x^(k+1)
+}
+##柯西分布
+cauchy<-function(x){
+  1/pi/(1+x^2)
+}
+samples(Fill(data[data$symbol==sample(symbol,1),]),0.5,5)
+```
+
+###   从上图可以看出，收益率不服从正态分布，但从图像可以看出，收益率分布和帕累托分布的图像更吻合
+###  筛选同一交易区间的的股票数据
+
+```{r}
+union.symbol=intersect(data[data$date=='2000-01-05',"symbol"],data[data$date=='2015-04-10', "symbol"])
+union.data=subset(data,date>='2000-01-05'&date<='2015-04-10'&symbol%in%union.symbol)
+### 无交易日数据的填充,抽样选取5值股票
+symbols=sample(union.symbol,5,replace=F)
+fill.data=lapply(symbols,function(symbols,data)Fill(subset(data,symbol==symbols)),data=union.data)
+names(fill.data)=symbols
+##假设不考虑卖空机制
+## 假设投资各股票的比例0<=Xi<=1, sum(Xi)=1,
+##  计算组合方差
+Combination.Var<-function(data,X){
+  Var=0
+  for(i in 1:length(data)){
+    for(j in 1:length(data)){
+      if(i==j)
+         Var=Var+X[i]^2*var(data[[i]]$daily)
+      else
+        Var=Var+X[i]*X[j]*cov(data[[i]]$daily,data[[j]]$daily)
+    }
+  }
+  return(Var)
+}
+Combination.Profit<-function(data,X){
+  Profit=0
+  for(i in 1:length(data)){
+    Profit=Profit+X[i]*mean(data[[i]]$daily)
+  }
+  return(Profit)
+}
+## 收益的有效边界
+efficient.Boundary<-function(data,n){
+  y=NULL
+  for(i in 1:n){
+ x=runif(length(data),0,1)
+ while(sum(x)<0.99||sum(x)>=1.001){
+   x=runif(length(data),0,1)
+ }
+ 
+ y=rbind(y,x)}
+ xy=sapply(c(1:n),function(i,x,data){c(var=Combination.Var(data,x[i,]),mean=Combination.Profit(data,x[i,]))},x=y,data=data)
+ data.frame(t(xy))
+}
+## 绘制边界收益曲线
+Boundary.data=efficient.Boundary(fii.data,1000)
+Boundary.data=Boundary.data[order(Boundary.data$var),]
+plot(Boundary.data,cex=0.3)
+simulation<-function(symbol,data){
+  si.data=data[data$symbol==symbol[1],]
+  si.data=si.data[order(si.data$date),]
+  ### 基于学习的思维，当没有足够当数据时，就放弃交易
+}
+
+```
+
